@@ -37,6 +37,8 @@
   button.primary:hover:not(:disabled){background:#000;}
   button.ghost{border-color:var(--bd);color:#555;}
   button.ghost:hover{background:#eee;color:#111;}
+  button.download{border-color:#0a7a2f;color:#0a7a2f;}
+  button.download:hover:not(:disabled){background:#0a7a2f;color:#fff;}
 
   .intro ul{padding-left:1.2rem;margin:.6rem 0;}
   .intro li{margin-bottom:.35rem;font-size:.9rem;}
@@ -876,12 +878,17 @@ function renderResults(){
                 Kepatuhan hukum, regulasi khusus, atau dependensi ke sistem eksisting tetap menjadi faktor penentu mutlak di luar skor kalkulasi ini.
             </p>
             <div class="btnrow">
+                <button class="download" id="downloadJson">⬇ Unduh Laporan (JSON)</button>
+                <button class="download" id="downloadTxt">⬇ Unduh Ringkasan (TXT)</button>
                 <button class="primary" id="copyLink">Salin Tautan Ringkasan</button>
                 <button id="print">Cetak / Simpan Laporan PDF</button>
                 <button class="ghost" id="restart">Evaluasi Ulang</button>
             </div>
         </div>
     `;
+
+    $('#downloadJson').addEventListener('click', () => downloadJSON());
+    $('#downloadTxt').addEventListener('click', () => downloadTXT());
 
     $('#copyLink').addEventListener('click', async () => {
         const url = location.origin + location.pathname + location.search + '#' + encodeState();
@@ -903,6 +910,239 @@ function renderResults(){
     });
 
     history.replaceState(null, '', '#' + encodeState());
+}
+
+/* =========================================================
+   8b. FUNGSI UNDUH HASIL
+   ========================================================= */
+
+function buildExportData(){
+    const { results, answered } = score();
+    const now = new Date();
+
+    // Build answer log with questions
+    const answerLog = QUESTIONS.map((q, qIdx) => {
+        const sel = state.answers[q.id] || {};
+        const selectedIndices = Object.keys(sel)
+            .filter(i => sel[i])
+            .map(i => parseInt(i, 10));
+
+        const selectedOptions = selectedIndices.map(i => ({
+            index: i,
+            text: q.opts[i].t,
+            isPriority: sel[i] === 2
+        }));
+
+        const allOptions = q.opts.map((o, idx) => ({
+            index: idx,
+            text: o.t,
+            isSelected: selectedIndices.includes(idx),
+            isPriority: selectedIndices.includes(idx) && sel[idx] === 2
+        }));
+
+        return {
+            questionNumber: qIdx + 1,
+            questionId: q.id,
+            question: q.q,
+            hint: q.hint || null,
+            selectedOptions: selectedOptions,
+            allOptions: allOptions,
+            wasAnswered: selectedIndices.length > 0
+        };
+    });
+
+    // Build results
+    const resultData = results.map((r, i) => {
+        const label = r.pct >= 70 ? 'Sangat Direkomendasikan'
+                    : r.pct >= 45 ? 'Cukup Sesuai'
+                    : r.pct >= 20 ? 'Kurang Sesuai'
+                    : 'Tidak Direkomendasikan';
+
+        return {
+            rank: i + 1,
+            architectureId: r.arch.id,
+            architectureName: r.arch.name,
+            tagline: r.arch.tag,
+            description: r.arch.about,
+            score: r.raw,
+            possibleScore: r.possible,
+            percentage: r.pct,
+            label: label,
+            positiveFactors: r.pos.map(p => ({
+                question: p.q,
+                option: p.o,
+                scoreValue: p.v,
+                isPriority: p.w === 2
+            })),
+            negativeFactors: r.neg.map(p => ({
+                question: p.q,
+                option: p.o,
+                scoreValue: p.v,
+                isPriority: p.w === 2
+            })),
+            stack: r.arch.stack,
+            pros: r.arch.pros,
+            cons: r.arch.cons,
+            watch: r.arch.watch
+        };
+    });
+
+    return {
+        metadata: {
+            title: 'Laporan Evaluasi Arsitektur Sistem',
+            generatedAt: now.toISOString(),
+            generatedAtLocal: now.toLocaleString('id-ID'),
+            totalQuestions: QUESTIONS.length,
+            answeredQuestions: answered,
+            topRecommendation: resultData[0] ? resultData[0].architectureName : null,
+            topScore: resultData[0] ? resultData[0].percentage : 0
+        },
+        answers: answerLog,
+        results: resultData
+    };
+}
+
+function downloadJSON(){
+    const data = buildExportData();
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const date = new Date().toISOString().slice(0, 10);
+    a.download = `laporan-arsitektur-sistem-${date}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast('Laporan JSON berhasil diunduh');
+}
+
+function downloadTXT(){
+    const data = buildExportData();
+    const lines = [];
+    const sep = '═'.repeat(70);
+    const sep2 = '─'.repeat(70);
+
+    lines.push(sep);
+    lines.push('  LAPORAN EVALUASI ARSITEKTUR SISTEM');
+    lines.push('  Pemilih Arsitektur Sistem');
+    lines.push(sep);
+    lines.push('');
+    lines.push(`Tanggal Dibuat : ${data.metadata.generatedAtLocal}`);
+    lines.push(`Total Pertanyaan: ${data.metadata.totalQuestions}`);
+    lines.push(`Terisi          : ${data.metadata.answeredQuestions}`);
+    lines.push(`Rekomendasi Utama: ${data.metadata.topRecommendation} (${data.metadata.topScore}%)`);
+    lines.push('');
+
+    // Section: Answer Log
+    lines.push(sep);
+    lines.push('  LOG JAWABAN EVALUASI');
+    lines.push(sep);
+    lines.push('');
+
+    data.answers.forEach(a => {
+        lines.push(`Pertanyaan #${a.questionNumber}: ${a.question}`);
+        if (a.hint) lines.push(`  Petunjuk: ${a.hint}`);
+        lines.push('');
+
+        if (a.wasAnswered) {
+            lines.push('  Jawaban dipilih:');
+            a.selectedOptions.forEach(opt => {
+                const priorityMark = opt.isPriority ? ' [PRIORITAS UTAMA ×2]' : '';
+                lines.push(`    ✓ ${opt.text}${priorityMark}`);
+            });
+        } else {
+            lines.push('  (Tidak dijawab / dilewati)');
+        }
+        lines.push('');
+        lines.push(sep2);
+        lines.push('');
+    });
+
+    // Section: Results
+    lines.push('');
+    lines.push(sep);
+    lines.push('  HASIL REKOMENDASI ARSITEKTUR');
+    lines.push(sep);
+    lines.push('');
+
+    data.results.forEach(r => {
+        const rankLabel = r.rank === 1 ? ' ★ REKOMENDASI UTAMA' : '';
+        lines.push(`#${r.rank} ${r.architectureName}${rankLabel}`);
+        lines.push(`   ${r.tagline}`);
+        lines.push(`   Skor: ${r.score}/${r.possible} (${r.percentage}%) — ${r.label}`);
+        lines.push('');
+
+        if (r.positiveFactors.length > 0) {
+            lines.push('   Faktor Pendukung:');
+            r.positiveFactors.forEach(p => {
+                const pMark = p.isPriority ? ' [×2]' : '';
+                lines.push(`     +${p.scoreValue}${pMark} — ${p.option}`);
+                lines.push(`         (dari: ${p.question})`);
+            });
+            lines.push('');
+        }
+
+        if (r.negativeFactors.length > 0) {
+            lines.push('   Faktor Pembatas:');
+            r.negativeFactors.forEach(p => {
+                const pMark = p.isPriority ? ' [×2]' : '';
+                lines.push(`     ${p.scoreValue}${pMark} — ${p.option}`);
+                lines.push(`         (dari: ${p.question})`);
+            });
+            lines.push('');
+        }
+
+        lines.push('   Gambaran Arsitektur:');
+        lines.push(`   ${r.description}`);
+        lines.push('');
+        lines.push('   Teknologi & Ekosistem:');
+        r.stack.forEach(s => lines.push(`     • ${s}`));
+        lines.push('');
+        lines.push('   Keunggulan:');
+        r.pros.forEach(s => lines.push(`     • ${s}`));
+        lines.push('');
+        lines.push('   Tantangan:');
+        r.cons.forEach(s => lines.push(`     • ${s}`));
+        lines.push('');
+        lines.push(`   Catatan: ${r.watch}`);
+        lines.push('');
+        lines.push(sep2);
+        lines.push('');
+    });
+
+    lines.push('');
+    lines.push(sep);
+    lines.push('  METODOLOGI');
+    lines.push(sep);
+    lines.push('');
+    lines.push('Setiap kriteria jawaban memberikan akumulasi bobot positif atau negatif');
+    lines.push('terhadap karakteristik tiap opsi arsitektur. Kriteria yang ditandai sebagai');
+    lines.push('"Prioritas Utama" memperhitungkan bobot ganda (×2).');
+    lines.push('');
+    lines.push('Nilai persentase menunjukkan konsistensi pilihan terhadap profil ideal');
+    lines.push('dari arsitektur terkait.');
+    lines.push('');
+    lines.push('Kepatuhan hukum, regulasi khusus, atau dependensi ke sistem eksisting');
+    lines.push('tetap menjadi faktor penentu mutlak di luar skor kalkulasi ini.');
+    lines.push('');
+    lines.push(sep);
+    lines.push('  Dibuat dengan Pemilih Arsitektur Sistem');
+    lines.push(sep);
+
+    const text = lines.join('\n');
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const date = new Date().toISOString().slice(0, 10);
+    a.download = `ringkasan-arsitektur-sistem-${date}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast('Ringkasan TXT berhasil diunduh');
 }
 
 /* =========================================================
